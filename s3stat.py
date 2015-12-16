@@ -131,7 +131,7 @@ import ssl
 import threading
 from boto.s3.connection import S3Connection
 import subprocess
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import argparse
 import tempfile
 import json
@@ -206,7 +206,7 @@ class S3Stat(object):
     """
     _num_threads = 10
 
-    def __init__(self, input_bucket, input_prefix, date_filter, aws_keys=None, is_cloudfront=False):
+    def __init__(self, input_bucket, input_prefix, date_filter=None, aws_keys=None, is_cloudfront=False, date_start=None, date_end=None):
         """
         :param input_bucket: the amazon bucket to download log files from
         :param input_prefix: only log files with the given prefix will be downloaded
@@ -217,7 +217,9 @@ class S3Stat(object):
         self.input_bucket = input_bucket
         self.date_filter = date_filter
         self.is_cloudfront = is_cloudfront
-        self.input_prefix = input_prefix + date_filter.strftime("%Y-%m-%d")
+        self.input_prefix = input_prefix
+        self.date_start = date_start
+        self.date_end = date_end
         self.aws_keys = aws_keys
 
     def _create_goconfig(self):
@@ -263,8 +265,20 @@ log_format %^ %^ [%d:%^] %h %^ %^ %^ %^ "%^ %r %^" %s %^ %b %^ %^ %^ "%^" "%u" %
             t.setDaemon(True)
             t.start()
 
-            for item in mybucket.list(prefix=self.input_prefix):
-                log_file_queue.put(item)
+
+            eval_days = []
+
+            if not (self.date_start and self.date_end):
+                eval_days = [self.date]
+            else:
+                diff = self.date_end - self.date_start
+                for i in range(diff.days + 1):
+                    eval_days.append(self.date_start + timedelta(days=i))
+
+            for day in eval_days:
+                prefix = self.input_prefix + day.strftime("%Y-%m-%d")
+                for item in mybucket.list(prefix=prefix):
+                    log_file_queue.put(item)
             # wait until the queues are emptied
             log_file_queue.join()
             log_string_queue.join()
@@ -349,6 +363,9 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", help="Output format. One of html, json or csv.", default=None)
     parser.add_argument("-v", "--verbose", help="Verbose output", action="store_true", default=False)
     parser.add_argument("-d", "--date", help="The date to run the report on in YYYY-MM-DD format. Defaults to today.")
+    parser.add_argument("-s", "--startdate", help="The date to run the report on in YYYY-MM-DD format. Defaults to today.")
+    parser.add_argument("-e", "--enddate", help="The date to run the report on in YYYY-MM-DD format. Defaults to today.")
+
 
     args = parser.parse_args()
 
@@ -361,10 +378,22 @@ if __name__ == "__main__":
     else:
         given_date = date.today()
 
+    if args.startdate:
+        start_date = datetime.strptime(args.startdate, "%Y-%m-%d")
+    else:
+        start_date = None    
+
+    if args.enddate:
+        end_date = datetime.strptime(args.enddate, "%Y-%m-%d")
+    else:
+        end_date = None
+
+
+
     if args.aws_key and args.aws_secret:
         aws_keys = (args.aws_key, args.aws_secret)
     else:
         aws_keys = None
 
-    processor = S3Stat(args.input_bucket, args.input_prefix, given_date, aws_keys, args.cloudfront)
+    processor = S3Stat(args.input_bucket, args.input_prefix, given_date, aws_keys, args.cloudfront, start_date, end_date)
     processor.run(args.output)
